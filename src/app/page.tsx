@@ -1,103 +1,183 @@
-import Image from "next/image";
+"use client";
 
-export default function Home() {
+// import { useState } from "react";
+// import { loadStripe } from "@stripe/stripe-js";
+// import {
+//   Elements,
+//   useStripe,
+//   useElements,
+//   CardElement,
+// } from "@stripe/react-stripe-js";
+
+// // ✅ এটা আপনার Stripe publishable key
+// const stripePromise = loadStripe(
+//   "pk_test_51R5NAuFl8CziaLNQx7QIJNCLyaKvbyYlCEugM2OdotNm3j5oJNeBWNuIJPgBqMVVGko4DpnGogfxgX0CfYLPXM3500zToPfWCc"
+// );
+
+// const clientSecret =
+//   "pi_3RhbG6Fl8CziaLNQ1EbG7Lb9_secret_ZWUnWh0DE4vUcwahgTd0DrSi8";
+
+// const CARD_ELEMENT_OPTIONS = {
+//   style: {
+//     base: {
+//       color: "#32325d",
+//       fontFamily: '"Helvetica Neue", Helvetica, sans-serif',
+//       fontSmoothing: "antialiased",
+//       fontSize: "16px",
+//       "::placeholder": {
+//         color: "#a0aec0",
+//       },
+//     },
+//     invalid: {
+//       color: "#fa755a",
+//       iconColor: "#fa755a",
+//     },
+//   },
+// };
+
+// const ConfirmPaymentForm = ({ clientSecret }: { clientSecret: string }) => {
+//   const stripe = useStripe();
+//   const elements = useElements();
+
+//   const [loading, setLoading] = useState(false);
+//   const [errorMsg, setErrorMsg] = useState<string | null>(null);
+//   const [successMsg, setSuccessMsg] = useState<string | null>(null);
+
+//   const handleSubmit = async (event: React.FormEvent) => {
+//     event.preventDefault();
+
+//     if (!stripe || !elements) return;
+
+//     const cardElement = elements.getElement(CardElement);
+//     if (!cardElement) {
+//       setErrorMsg("Card Element not found");
+//       return;
+//     }
+
+//     setLoading(true);
+//     setErrorMsg(null);
+//     setSuccessMsg(null);
+
+//     const result = await stripe.confirmCardPayment(clientSecret, {
+//       payment_method: {
+//         card: cardElement,
+//         billing_details: {
+//           name: "Customer Name",
+//         },
+//       },
+//     });
+//     console.log(result);
+//     setLoading(false);
+
+//     if (result.error) {
+//       setErrorMsg(result.error.message ?? "Payment failed");
+//     } else if (
+//       result.paymentIntent &&
+//       result.paymentIntent.status === "succeeded"
+//     ) {
+//       setSuccessMsg("✅ Payment succeeded!");
+//     }
+//   };
+
+//   return (
+//     <div style={{ maxWidth: 500, margin: "0 auto", padding: "2rem" }}>
+//       <form onSubmit={handleSubmit}>
+//         <label>
+//           Card details
+//           <CardElement options={CARD_ELEMENT_OPTIONS} />
+//         </label>
+
+//         <button
+//           type="submit"
+//           disabled={!stripe || loading}
+//           style={{
+//             marginTop: 20,
+//             padding: "10px 20px",
+//             backgroundColor: "#6772e5",
+//             color: "#fff",
+//             border: "none",
+//             borderRadius: "4px",
+//             cursor: "pointer",
+//           }}
+//         >
+//           {loading ? "Processing…" : "Pay"}
+//         </button>
+//       </form>
+
+//       {errorMsg && (
+//         <div style={{ color: "red", marginTop: 10 }}>{errorMsg}</div>
+//       )}
+//       {successMsg && (
+//         <div style={{ color: "green", marginTop: 10 }}>{successMsg}</div>
+//       )}
+//     </div>
+//   );
+// };
+
+// export default function PaymentPage() {
+//   const handleLogin = () => {
+//     window.location.href = "http://localhost:3000/auth/google";
+//   };
+
+//   return (
+//     <div>
+//       <Elements stripe={stripePromise}>
+//         <ConfirmPaymentForm clientSecret={clientSecret} />
+//       </Elements>
+
+//       <button
+//         onClick={handleLogin}
+//         className="px-4 py-2 bg-red-500 text-white rounded hover:bg-red-600"
+//         style={{ marginTop: "20px", marginLeft: "20px" }}
+//       >
+//         Login with Google
+//       </button>
+//     </div>
+//   );
+// }
+// export default GoogleLoginButton;
+import React from "react";
+import { v4 as uuidv4 } from "uuid";
+import sha256 from "crypto-js/sha256";
+import Base64 from "crypto-js/enc-base64";
+
+const clientKey = "sbawtbqug63mru0371";
+const redirectUri =
+  "https://cobra-humorous-sharply.ngrok-free.app/auth/tiktok/callback";
+
+function base64UrlEncode(str: string) {
+  return str.replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+}
+
+function generateCodeChallenge(codeVerifier: string): string {
+  const hash = sha256(codeVerifier);
+  return base64UrlEncode(Base64.stringify(hash));
+}
+
+const TikTokLogin = () => {
+  const handleLogin = async () => {
+    const codeVerifier = uuidv4() + uuidv4();
+    const codeChallenge = generateCodeChallenge(codeVerifier);
+    const state = uuidv4();
+
+    localStorage.setItem("tiktok_code_verifier", codeVerifier);
+    localStorage.setItem("tiktok_state", state);
+    const url = `https://www.tiktok.com/v2/auth/authorize?client_key=${clientKey}&response_type=code&scope=${encodeURIComponent(
+      "video.upload,video.publish,user.info.basic,video.list"
+    )}&redirect_uri=${encodeURIComponent(
+      redirectUri
+    )}&state=${state}&code_challenge=${codeChallenge}&code_challenge_method=S256`;
+
+    window.location.href = url;
+  };
+
   return (
-    <div className="grid grid-rows-[20px_1fr_20px] items-center justify-items-center min-h-screen p-8 pb-20 gap-16 sm:p-20 font-[family-name:var(--font-geist-sans)]">
-      <main className="flex flex-col gap-[32px] row-start-2 items-center sm:items-start">
-        <Image
-          className="dark:invert"
-          src="/next.svg"
-          alt="Next.js logo"
-          width={180}
-          height={38}
-          priority
-        />
-        <ol className="list-inside list-decimal text-sm/6 text-center sm:text-left font-[family-name:var(--font-geist-mono)]">
-          <li className="mb-2 tracking-[-.01em]">
-            Get started by editing{" "}
-            <code className="bg-black/[.05] dark:bg-white/[.06] px-1 py-0.5 rounded font-[family-name:var(--font-geist-mono)] font-semibold">
-              src/app/page.tsx
-            </code>
-            .
-          </li>
-          <li className="tracking-[-.01em]">
-            Save and see your changes instantly.
-          </li>
-        </ol>
-
-        <div className="flex gap-4 items-center flex-col sm:flex-row">
-          <a
-            className="rounded-full border border-solid border-transparent transition-colors flex items-center justify-center bg-foreground text-background gap-2 hover:bg-[#383838] dark:hover:bg-[#ccc] font-medium text-sm sm:text-base h-10 sm:h-12 px-4 sm:px-5 sm:w-auto"
-            href="https://vercel.com/new?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            <Image
-              className="dark:invert"
-              src="/vercel.svg"
-              alt="Vercel logomark"
-              width={20}
-              height={20}
-            />
-            Deploy now
-          </a>
-          <a
-            className="rounded-full border border-solid border-black/[.08] dark:border-white/[.145] transition-colors flex items-center justify-center hover:bg-[#f2f2f2] dark:hover:bg-[#1a1a1a] hover:border-transparent font-medium text-sm sm:text-base h-10 sm:h-12 px-4 sm:px-5 w-full sm:w-auto md:w-[158px]"
-            href="https://nextjs.org/docs?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            Read our docs
-          </a>
-        </div>
-      </main>
-      <footer className="row-start-3 flex gap-[24px] flex-wrap items-center justify-center">
-        <a
-          className="flex items-center gap-2 hover:underline hover:underline-offset-4"
-          href="https://nextjs.org/learn?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          <Image
-            aria-hidden
-            src="/file.svg"
-            alt="File icon"
-            width={16}
-            height={16}
-          />
-          Learn
-        </a>
-        <a
-          className="flex items-center gap-2 hover:underline hover:underline-offset-4"
-          href="https://vercel.com/templates?framework=next.js&utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          <Image
-            aria-hidden
-            src="/window.svg"
-            alt="Window icon"
-            width={16}
-            height={16}
-          />
-          Examples
-        </a>
-        <a
-          className="flex items-center gap-2 hover:underline hover:underline-offset-4"
-          href="https://nextjs.org?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          <Image
-            aria-hidden
-            src="/globe.svg"
-            alt="Globe icon"
-            width={16}
-            height={16}
-          />
-          Go to nextjs.org →
-        </a>
-      </footer>
+    <div>
+      <button className="bg-red-400 m-12 p-8" onClick={handleLogin}>
+        Login with TikTok
+      </button>
     </div>
   );
-}
+};
+
+export default TikTokLogin;
