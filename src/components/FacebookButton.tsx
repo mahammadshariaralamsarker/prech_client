@@ -6,10 +6,17 @@ import React from "react";
 const FacebookButton = () => {
   //   const router = useRouter();
   const handleClick = async () => {
-    const result = await axios.get("http://localhost:3000/auth/facebook");
-    console.log(result);
+    try {
+      console.log("Button clicked");
+      const result = await axios.get(
+        "https://cobra-humorous-sharply.ngrok-free.app/auth/facebook"
+      );
+      console.log(result);
+    } catch (error) {
+      console.error(error);
+    }
     // router.push(result.data.redirectUrl);
-    window.location.href = result.data;
+    // window.location.href = result.data;
   };
 
   return (
