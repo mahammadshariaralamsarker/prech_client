@@ -6,9 +6,9 @@ import React from "react";
 
 const Page = () => {
   return (
-    <div>
-      <PaymentStripePage />
-      {/* <FacebookButton /> */}
+    <div  >
+      {/* <PaymentStripePage /> */}
+      <FacebookButton />
       {/* <TikTokLogin /> */}
     </div>
   );

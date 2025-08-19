@@ -40,8 +40,6 @@ const TikTokLogin = () => {
       <button className="bg-red-400 m-12 p-8" onClick={handleLogin}>
         Login with TikTok
       </button>
-
-      <FacebookButton />
     </div>
   );
 };

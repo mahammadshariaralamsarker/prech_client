@@ -13,10 +13,10 @@ const FacebookButton = () => {
   };
 
   return (
-    <div className="">
+    <div className=" flex justify-center">
       <button
         onClick={handleClick}
-        className="p-2 px-5 bg-blue-500 rounded-2xl text-xl capitalize cursor-pointer"
+        className="p-2 px-5 bg-blue-500 rounded-2xl text-xl capitalize cursor-pointer mt-12"
       >
         login with facebook
       </button>
