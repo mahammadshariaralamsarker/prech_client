@@ -1,4 +1,5 @@
 "use client";
+import AlvaaroTiktokLogin from "@/components/AlvaaroTiktok";
 import FacebookButton from "@/components/FacebookButton";
 import PaymentStripePage from "@/components/PaymentStripe";
 import TikTokLogin from "@/components/TiktokLogin";
@@ -10,6 +11,7 @@ const Page = () => {
       {/* <PaymentStripePage /> */}
       <FacebookButton />
       {/* <TikTokLogin /> */}
+      {/* <AlvaaroTiktokLogin /> */}
     </div>
   );
 };
