@@ -1,908 +1,651 @@
 "use client";
 
-import { useState, useEffect, useRef } from "react";
-import Image from "next/image";
-import io from "socket.io-client";
-import axios from "axios";
+import React, { useState, useEffect, useRef, useCallback } from "react";
+import { Send, Paperclip, FileText, Check, CheckCheck, X } from "lucide-react";
+import io, { Socket } from "socket.io-client";
 
-// ============================================
-// TYPES & INTERFACES
-// ============================================
+const API_BASE = "http://localhost:3000";
+const SOCKET_URL = "http://localhost:3000/chat";
 
 interface Message {
-  _id: string;
-  from: string;
-  to: string;
-  text: string;
-  messageType: "text" | "image" | "pdf";
+  id: string;
+  senderId: string;
+  receiverId: string;
+  content: string;
+  messageType: "TEXT" | "IMAGE" | "PDF";
   fileUrl?: string;
   fileName?: string;
   fileSize?: number;
-  thumbnailUrl?: string;
-  status: "sent" | "delivered" | "read";
   isRead: boolean;
   createdAt: string;
-  readAt?: string;
+  conversationId: string;
 }
 
-interface User {
-  _id: string;
-  name?: string;
-  fullName?: string;
-  email: string;
-  profile?: {
-    avatar?: string;
+interface Conversation {
+  id: string;
+  otherUser: {
+    id: string;
+    name: string;
+    email?: string;
+  };
+  lastMessage?: string;
+  lastMessageAt?: string;
+}
+
+interface LoginResponse {
+  success: boolean;
+  message: string;
+  data: {
+    token: string;
+    userExists: {
+      id: string;
+      email: string;
+      name: string;
+      phone: string;
+      role: string;
+      isActive: boolean;
+      isEmailVerified: boolean;
+    };
   };
 }
 
-// ============================================
-// API SERVICE
-// ============================================
-
-const API_URL =
-  process.env.NEXT_PUBLIC_API_URL || "http://localhost:3000/api/v1";
-const WS_URL = process.env.NEXT_PUBLIC_WS_URL || "http://localhost:3000";
-
-// Create axios instance
-const api = axios.create({
-  baseURL: API_URL,
-});
-
-// Add auth token to all requests
-api.interceptors.request.use((config) => {
-  const token = localStorage.getItem("token");
-  console.log(
-    "Axios interceptor - Token from localStorage:",
-    token ? "Exists" : "Not found"
-  );
-  if (token) {
-    config.headers.Authorization = `Bearer ${token}`;
-    console.log(
-      "Axios interceptor - Authorization header set:",
-      config.headers.Authorization
-    );
-  } else {
-    console.warn("Axios interceptor - No token found in localStorage");
-  }
-  return config;
-});
-
-// Chat API methods
-const chatAPI = {
-  sendMessage: async (toUserId: string, content: string) => {
-    const response = await api.post("/sms/send", { toUserId, content });
-    return response.data;
-  },
-
-  uploadFile: async (toUserId: string, file: File, caption?: string) => {
-    const formData = new FormData();
-    formData.append("file", file);
-    formData.append("toUserId", toUserId);
-    if (caption) formData.append("caption", caption);
-
-    const response = await api.post("/sms/file-upload", formData, {
-      headers: { "Content-Type": "multipart/form-data" },
-    });
-    return response.data;
-  },
-
-  getMessages: async (userId: string) => {
-    const response = await api.get(`/sms/list?user=${userId}`);
-    return response.data;
-  },
-
-  getAllUsers: async () => {
-    const response = await api.get("/sms/all-users");
-    return response.data;
-  },
-
-  markAsRead: async (fromUserId: string) => {
-    const response = await api.post("/sms/mark-as-read", { fromUserId });
-    return response.data;
-  },
-};
-
-// ============================================
-// SOCKET SERVICE
-// ============================================
-
-let socket: ReturnType<typeof io> | null = null;
-
-const connectSocket = (userId: string) => {
-  socket = io(WS_URL, {
-    query: { user: userId },
-  });
-
-  socket.on("connect", () => {
-    console.log("✅ Socket connected:", socket?.id);
-  });
-
-  socket.on("disconnect", () => {
-    console.log("❌ Socket disconnected");
-  });
-
-  return socket;
-};
-
-const disconnectSocket = () => {
-  if (socket) {
-    socket.disconnect();
-    socket = null;
-  }
-};
-
-// ============================================
-// MAIN CHAT COMPONENT
-// ============================================
-
-export default function DaymoonChat() {
-  // Current user (hardcoded for demo - replace with auth)
-  const [currentUserId, setCurrentUserId] = useState<string>("");
-  const [currentUserName, setCurrentUserName] = useState<string>("");
-
-  // Chat state
-  const [users, setUsers] = useState<User[]>([]);
-  const [selectedUser, setSelectedUser] = useState<User | null>(null);
-  const [messages, setMessages] = useState<Message[]>([]);
-  const [isTyping, setIsTyping] = useState(false);
+const DaymoonChat = () => {
+  const [socket, setSocket] = useState<Socket | null>(null);
+  const [userId, setUserId] = useState("");
+  const [userName, setUserName] = useState("");
+  const [emailInput, setEmailInput] = useState("");
+  const [passwordInput, setPasswordInput] = useState("");
+  const [token, setToken] = useState("");
+  const [isAuthenticated, setIsAuthenticated] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
-  // Typing and connection indicators
-  const [typingByUser, setTypingByUser] = useState<Record<string, boolean>>({});
-  const [socketConnected, setSocketConnected] = useState(false);
 
-  // Input state
-  const [messageText, setMessageText] = useState("");
-  const [selectedFile, setSelectedFile] = useState<File | null>(null);
+  const [conversations, setConversations] = useState<Conversation[]>([]);
+  const [selectedConversation, setSelectedConversation] =
+    useState<Conversation | null>(null);
+  const [messages, setMessages] = useState<Message[]>([]);
+  const [messageInput, setMessageInput] = useState("");
+  const [searchQuery, setSearchQuery] = useState("");
+  const [onlineUsers, setOnlineUsers] = useState(new Set<string>());
   const [isUploading, setIsUploading] = useState(false);
 
-  // Login state
-  const [isLoggedIn, setIsLoggedIn] = useState(false);
-  const [loginEmail, setLoginEmail] = useState("");
-  const [loginPassword, setLoginPassword] = useState("");
-
-  // Refs
   const messagesEndRef = useRef<HTMLDivElement>(null);
-  const typingTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  // ============================================
-  // AUTO-SCROLL
-  // ============================================
-
+  // Auto scroll to bottom when messages change
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages]);
 
-  // ============================================
-  // LOGIN
-  // ============================================
+  // ===== LOGIN =====
+  const handleLogin = async () => {
+    if (!emailInput || !passwordInput) {
+      alert("Please enter both email and password");
+      return;
+    }
 
-  const handleLogin = async (e: React.FormEvent) => {
-    e.preventDefault();
+    setIsLoading(true);
 
     try {
-      // Call your auth API
-      const response = await axios.post(`${API_URL}/auth/login`, {
-        email: loginEmail,
-        password: loginPassword,
+      const res = await fetch(`${API_BASE}/auth/login`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email: emailInput, password: passwordInput }),
       });
 
-      console.log("Full API response:", response);
-      console.log("Response data:", response.data);
-      console.log("Response data keys:", Object.keys(response.data));
+      const data: LoginResponse = await res.json();
 
-      // Handle different response structures
-      let token, user;
-
-      if (response.data.token && response.data.user) {
-        // Standard structure: { token, user }
-        token = response.data.token;
-        user = response.data.user;
-      } else if (response.data.data) {
-        // Nested structure: { data: { access_token, user } } or { data: { token, user } }
-        console.log("Nested data structure detected:", response.data.data);
-        token =
-          response.data.data.access_token ||
-          response.data.data.accessToken ||
-          response.data.data.token;
-        user = response.data.data.user || response.data.data;
-      } else if (response.data.accessToken || response.data.access_token) {
-        // Alternative token name: { accessToken, user } or { access_token, user }
-        token = response.data.access_token || response.data.accessToken;
-        user = response.data.user;
-      } else if (response.data._id) {
-        // Maybe the whole response.data is the user object
-        console.log("Response.data appears to be the user object");
-        user = response.data;
-        token =
-          response.headers?.authorization || response.headers?.Authorization;
-      } else {
-        console.error("Unknown response structure:", response.data);
-        throw new Error(
-          "Unable to parse login response. Check console for details."
-        );
+      if (!data.success) {
+        throw new Error(data.message || "Login failed");
       }
 
-      console.log("Extracted token:", token);
-      console.log("Extracted user:", user);
+      const userIdFromServer = data.data.userExists.id;
+      const tokenFromServer = data.data.token;
+      const userNameFromServer = data.data.userExists.name;
 
-      // Check if token and user exist
-      if (!token) {
-        console.error("Token validation failed. Token:", token);
-        throw new Error(
-          "No token received from server. Check console for details."
-        );
-      }
+      setUserId(userIdFromServer);
+      setToken(tokenFromServer);
+      setUserName(userNameFromServer);
+      setIsAuthenticated(true);
 
-      if (!user || !user._id) {
-        console.error("User validation failed. User object:", user);
-        throw new Error(
-          "Invalid user data received from server. Check console for details."
-        );
-      }
-
-      // Store token and user info
-      localStorage.setItem("token", token);
-      localStorage.setItem("userId", user._id);
-      localStorage.setItem(
-        "userName",
-        user.name || user.fullName || user.email
-      );
-
-      setCurrentUserId(user._id);
-      setCurrentUserName(user.name || user.fullName || user.email);
-      setIsLoggedIn(true);
-
-      // Connect socket
-      connectSocket(user._id);
-
-      // Load users
-      loadUsers();
-    } catch (error) {
-      console.error(
-        "Login error:",
-        error instanceof Error ? error.message : String(error)
-      );
-      if (axios.isAxiosError(error)) {
-        console.error("Axios error details:", error.response?.data);
-      }
-      alert("Login failed! Check credentials and console for details.");
-    }
-  };
-
-  // ============================================
-  // LOAD USERS
-  // ============================================
-
-  const loadUsers = async () => {
-    try {
-      const token = localStorage.getItem("token");
-      console.log(
-        "Loading users with token:",
-        token ? "Token exists" : "No token found"
-      );
-
-      const response = await chatAPI.getAllUsers();
-      console.log("Users API response:", response);
-
-      // Handle different response structures
-      let usersList;
-      if (Array.isArray(response)) {
-        // Direct array: [user1, user2, ...]
-        usersList = response;
-      } else if (response.data && Array.isArray(response.data)) {
-        // Nested in data: { data: [user1, user2, ...] }
-        usersList = response.data;
-      } else if (response.users && Array.isArray(response.users)) {
-        // Nested in users: { users: [user1, user2, ...] }
-        usersList = response.users;
-      } else {
-        console.error("Unknown users response structure:", response);
-        usersList = [];
-      }
-
-      console.log("Parsed users list:", usersList);
-      setUsers(usersList);
-    } catch (error) {
-      console.error("Error loading users:", error);
-      if (axios.isAxiosError(error)) {
-        console.error("Status:", error.response?.status);
-        console.error("Response data:", error.response?.data);
-        console.error("Request headers:", error.config?.headers);
-      }
-    }
-  };
-
-  // ============================================
-  // LOAD MESSAGES
-  // ============================================
-
-  const loadMessages = async (userId: string) => {
-    setIsLoading(true);
-    try {
-      const response = await chatAPI.getMessages(userId);
-      console.log("Messages API response:", response);
-
-      // Handle different response structures
-      let messagesList;
-      if (Array.isArray(response)) {
-        // Direct array: [message1, message2, ...]
-        messagesList = response;
-      } else if (response.data && Array.isArray(response.data)) {
-        // Nested in data: { data: [message1, message2, ...] }
-        messagesList = response.data;
-      } else if (response.messages && Array.isArray(response.messages)) {
-        // Nested in messages: { messages: [message1, message2, ...] }
-        messagesList = response.messages;
-      } else {
-        console.error("Unknown messages response structure:", response);
-        messagesList = [];
-      }
-
-      console.log("Parsed messages list:", messagesList);
-      setMessages(messagesList);
-    } catch (error) {
-      console.error("Error loading messages:", error);
-      setMessages([]); // Set empty array on error
+      // Fetch conversations after login
+      await fetchConversations(tokenFromServer);
+    } catch (err: any) {
+      console.error("Login error:", err);
+      alert("Login failed: " + err.message);
     } finally {
       setIsLoading(false);
     }
   };
 
-  // ============================================
-  // SELECT USER
-  // ============================================
+  // ===== FETCH CONVERSATIONS =====
+  const fetchConversations = async (authToken?: string) => {
+    try {
+      const res = await fetch(`${API_BASE}/chat/conversations`, {
+        headers: { Authorization: `Bearer ${authToken || token}` },
+      });
+      const data = await res.json();
 
-  const handleSelectUser = (user: User) => {
-    setSelectedUser(user);
-    loadMessages(user._id);
+      if (data.success) {
+        setConversations(data.data || []);
+      }
+    } catch (err) {
+      console.error("Failed to fetch conversations:", err);
+    }
   };
 
-  // ============================================
-  // SOCKET LISTENERS
-  // ============================================
+  // ===== FETCH MESSAGES =====
+  const fetchMessages = async (conversationId: string) => {
+    try {
+      const res = await fetch(`${API_BASE}/chat/messages`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({ conversationId, page: 1, limit: 50 }),
+      });
+      const data = await res.json();
 
+      if (data.success) {
+        setMessages(data.data?.messages || []);
+      }
+    } catch (err) {
+      console.error("Error fetching messages:", err);
+    }
+  };
+
+  // ===== UPDATE CONVERSATION =====
+  const updateConversationLastMessage = useCallback((msg: Message) => {
+    setConversations((prev) =>
+      prev.map((c) =>
+        c.id === msg.conversationId
+          ? {
+              ...c,
+              lastMessage: msg.content,
+              lastMessageAt: msg.createdAt,
+            }
+          : c
+      )
+    );
+  }, []);
+
+  // ===== SOCKET.IO CONNECTION =====
   useEffect(() => {
-    if (!isLoggedIn || !currentUserId) return;
+    if (!isAuthenticated || !userId) return;
 
-    const s = connectSocket(currentUserId);
-
-    // Track socket connection status for UI badge
-    setSocketConnected(s.connected);
-    const onConnect = () => setSocketConnected(true);
-    const onDisconnect = () => setSocketConnected(false);
-    s.on("connect", onConnect);
-    s.on("disconnect", onDisconnect);
-
-    // Listen for new messages
-    s.on("receive_message", (message: Message) => {
-      setMessages((prev) => [...prev, message]);
-
-      // Auto-mark as read if chat is open
-      if (selectedUser && message.from === selectedUser._id) {
-      }
+    const newSocket = io(SOCKET_URL, {
+      query: { userId },
+      transports: ["websocket", "polling"],
+      reconnection: true,
+      reconnectionAttempts: 5,
+      reconnectionDelay: 1000,
     });
 
-    // Listen for typing indicator
-    s.on("user_typing", (data: { userId: string; isTyping: boolean }) => {
-      console.log("Typing event received:", data);
-      // Update per-user typing map for sidebar
-      setTypingByUser((prev) => ({ ...prev, [data.userId]: data.isTyping }));
-
-      // Update header indicator for active chat
-      if (selectedUser && data.userId === selectedUser._id) {
-        setIsTyping(data.isTyping);
-      }
-
-      // Safety auto-clear after 3 seconds
-      if (data.isTyping) {
-        setTimeout(() => {
-          setTypingByUser((prev) => ({ ...prev, [data.userId]: false }));
-          if (selectedUser && data.userId === selectedUser._id) {
-            setIsTyping(false);
-          }
-        }, 3000);
-      }
+    newSocket.on("connect", () => {
+      console.log("✅ Socket connected");
     });
 
-    // Listen for status updates
-    s.on(
-      "message_status_updated",
-      (data: { messageId: string; status: "sent" | "delivered" | "read" }) => {
-        setMessages((prev) =>
-          prev.map((msg) =>
-            msg._id === data.messageId ? { ...msg, status: data.status } : msg
-          )
-        );
+    newSocket.on("disconnect", () => {
+      console.log("❌ Socket disconnected");
+    });
+
+    newSocket.on("new_message", (msg: Message) => {
+      console.log("📨 New message:", msg);
+      setMessages((prev) => [...prev, msg]);
+      updateConversationLastMessage(msg);
+    });
+
+    newSocket.on("message_updated", (msg: Message) => {
+      console.log("✏️ Message updated:", msg);
+      setMessages((prev) => prev.map((m) => (m.id === msg.id ? msg : m)));
+    });
+
+    newSocket.on("message_deleted", ({ messageId }: { messageId: string }) => {
+      console.log("🗑️ Message deleted:", messageId);
+      setMessages((prev) => prev.filter((m) => m.id !== messageId));
+    });
+
+    newSocket.on(
+      "user_online",
+      ({ userId: onlineUserId }: { userId: string }) => {
+        console.log("🟢 User online:", onlineUserId);
+        setOnlineUsers((prev) => new Set(prev).add(onlineUserId));
       }
     );
 
-    // Listen for read receipts
-    s.on("messages_read", (data: { readBy: string }) => {
-      if (selectedUser && data.readBy === selectedUser._id) {
-        setMessages((prev) =>
-          prev.map((msg) =>
-            msg.from === currentUserId && msg.to === selectedUser._id
-              ? { ...msg, status: "read", isRead: true }
-              : msg
-          )
-        );
+    newSocket.on(
+      "user_offline",
+      ({ userId: offlineUserId }: { userId: string }) => {
+        console.log("⚫ User offline:", offlineUserId);
+        setOnlineUsers((prev) => {
+          const newSet = new Set(prev);
+          newSet.delete(offlineUserId);
+          return newSet;
+        });
       }
+    );
+
+    newSocket.on("connect_error", (error: any) => {
+      console.error("🔴 Socket error:", error);
     });
+
+    setSocket(newSocket);
 
     return () => {
-      s.off("connect", onConnect);
-      s.off("disconnect", onDisconnect);
-      s.off("receive_message");
-      s.off("user_typing");
-      s.off("message_status_updated");
-      s.off("messages_read");
-      disconnectSocket();
+      newSocket.close();
     };
-  }, [isLoggedIn, currentUserId, selectedUser]);
+  }, [isAuthenticated, userId, updateConversationLastMessage]);
 
-  // ============================================
-  // SEND MESSAGE
-  // ============================================
+  // ===== SEND MESSAGE =====
+  const sendMessage = async () => {
+    if (!messageInput.trim() || !selectedConversation) return;
 
-  const handleSendMessage = async (e: React.FormEvent) => {
-    e.preventDefault();
-
-    if (!selectedUser) return;
+    const temp = messageInput;
+    setMessageInput("");
 
     try {
-      if (selectedFile) {
-        // Upload file
-        setIsUploading(true);
-        // Optionally, you can optimistically add a file message here as well
-        await chatAPI.uploadFile(selectedUser._id, selectedFile, messageText);
-        setSelectedFile(null);
-        setMessageText("");
-      } else if (messageText.trim()) {
-        // Send text message
-        const tempId = `local-${Date.now()}`;
-        const newMessage: Message = {
-          _id: tempId,
-          from: currentUserId,
-          to: selectedUser._id,
-          text: messageText,
-          messageType: "text",
-          status: "sent",
-          isRead: false,
-          createdAt: new Date().toISOString(),
-        };
-        setMessages((prev) => [...prev, newMessage]);
-        await chatAPI.sendMessage(selectedUser._id, messageText);
-        setMessageText("");
+      const res = await fetch(`${API_BASE}/chat/messages/send`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({
+          receiverId: selectedConversation.otherUser.id,
+          content: temp,
+          messageType: "TEXT",
+        }),
+      });
+
+      const data = await res.json();
+
+      if (data.success) {
+        setMessages((prev) => [...prev, data.data]);
+        updateConversationLastMessage(data.data);
+      } else {
+        setMessageInput(temp);
+        alert("Failed to send message");
       }
-    } catch (error) {
-      console.error("Error sending message:", error);
-      alert("Failed to send message");
+    } catch (err) {
+      console.error("Error sending message:", err);
+      setMessageInput(temp);
+      alert("Error sending message");
+    }
+  };
+
+  // ===== FILE UPLOAD =====
+  const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file || !selectedConversation) return;
+
+    setIsUploading(true);
+    const formData = new FormData();
+    formData.append("file", file);
+    formData.append("receiverId", selectedConversation.otherUser.id);
+    formData.append(
+      "fileType",
+      file.type.startsWith("image/") ? "IMAGE" : "PDF"
+    );
+    formData.append("caption", file.name);
+
+    try {
+      const res = await fetch(`${API_BASE}/chat/upload`, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${token}` },
+        body: formData,
+      });
+      const data = await res.json();
+
+      if (data.success) {
+        setMessages((prev) => [...prev, data.data]);
+        updateConversationLastMessage(data.data);
+      } else {
+        alert("File upload failed");
+      }
+    } catch (err) {
+      console.error("Error uploading file:", err);
+      alert("File upload failed");
     } finally {
       setIsUploading(false);
+      if (fileInputRef.current) fileInputRef.current.value = "";
     }
   };
 
-  // ============================================
-  // TYPING INDICATOR
-  // ============================================
-
-  const handleTyping = () => {
-    if (!socket || !selectedUser) {
-      console.log("❌ Cannot emit typing: socket or selectedUser missing");
-      return;
-    }
-
-    console.log("✅ Emitting typing_start to:", selectedUser._id);
-
-    socket.emit("typing_start", {
-      userId: currentUserId,
-      toUserId: selectedUser._id,
-    });
-
-    if (typingTimeoutRef.current) {
-      clearTimeout(typingTimeoutRef.current);
-    }
-
-    typingTimeoutRef.current = setTimeout(() => {
-      console.log("✅ Auto-emitting typing_stop");
-      socket?.emit("typing_stop", {
-        userId: currentUserId,
-        toUserId: selectedUser._id,
-      });
-    }, 2000);
+  // ===== SELECT CONVERSATION =====
+  const handleSelectConversation = async (conv: Conversation) => {
+    setSelectedConversation(conv);
+    await fetchMessages(conv.id);
   };
 
-  // ============================================
-  // FILE SELECTION
-  // ============================================
+  // ===== FILTER CONVERSATIONS =====
+  const filteredConversations = conversations.filter((c) =>
+    c.otherUser?.name?.toLowerCase().includes(searchQuery.toLowerCase())
+  );
 
-  const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-
-    // Validate file
-    const isImage = file.type.startsWith("image/");
-    const isPdf = file.type === "application/pdf";
-    const maxSize = isImage ? 5 * 1024 * 1024 : 10 * 1024 * 1024;
-
-    if (!isImage && !isPdf) {
-      alert("Only images (JPG, PNG, WebP) and PDFs are allowed");
-      return;
-    }
-
-    if (file.size > maxSize) {
-      alert(`File too large. Max ${maxSize / 1024 / 1024}MB`);
-      return;
-    }
-
-    setSelectedFile(file);
-  };
-
-  // ============================================
-  // FORMAT TIME
-  // ============================================
-
+  // ===== FORMAT TIME =====
   const formatTime = (date: string) => {
-    return new Date(date).toLocaleTimeString("en-US", {
+    if (!date) return "";
+    return new Date(date).toLocaleTimeString([], {
       hour: "2-digit",
       minute: "2-digit",
     });
   };
 
-  // ============================================
-  // RENDER MESSAGE
-  // ============================================
-
-  const renderMessage = (message: Message) => {
-    const isSentByMe = message.from === currentUserId;
-
+  // ===== LOGIN SCREEN =====
+  if (!isAuthenticated) {
     return (
-      <div
-        key={message._id}
-        className={`flex mb-4 ${isSentByMe ? "justify-end" : "justify-start"}`}
-      >
-        <div
-          className={`max-w-[75%] px-4 py-2 shadow ${
-            isSentByMe
-              ? "bg-[#0084ff] text-white rounded-2xl rounded-br-sm"
-              : "bg-white text-gray-900 border border-gray-200 rounded-2xl rounded-bl-sm"
-          }`}
-        >
-          {/* Message content */}
-          {message.messageType === "text" && (
-            <p className="break-words">{message.text}</p>
-          )}
-
-          {message.messageType === "image" && message.fileUrl && (
-            <div>
-              <Image
-                src={message.fileUrl}
-                alt={message.fileName || "image"}
-                width={512}
-                height={512}
-                className="max-w-sm h-auto w-auto rounded cursor-pointer"
-                unoptimized
-                onClick={() => window.open(message.fileUrl as string, "_blank")}
-              />
-              {message.text && <p className="mt-2">{message.text}</p>}
+      <div className="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-100 flex items-center justify-center p-4">
+        <div className="bg-white rounded-2xl shadow-xl p-8 w-full max-w-md">
+          <div className="text-center mb-8">
+            <div className="w-16 h-16 bg-gradient-to-br from-blue-500 to-indigo-600 rounded-full mx-auto mb-4 flex items-center justify-center">
+              <Send className="text-white" size={32} />
             </div>
-          )}
-
-          {message.messageType === "pdf" && (
-            <div>
-              <a
-                href={message.fileUrl}
-                download={message.fileName}
-                className="flex items-center gap-2 text-blue-600 hover:underline"
-              >
-                <span>📄</span>
-                <span>{message.fileName}</span>
-              </a>
-              <p className="text-xs mt-1">
-                {((message.fileSize || 0) / 1024 / 1024).toFixed(2)} MB
-              </p>
-              {message.text && <p className="mt-2">{message.text}</p>}
-            </div>
-          )}
-
-          {/* Footer */}
-          <div
-            className={`flex items-center mt-1 text-[10px] opacity-70 ${
-              isSentByMe ? "justify-end" : "justify-start"
-            }`}
-          >
-            <span className="whitespace-nowrap">
-              {formatTime(message.createdAt)}
-            </span>
-            {isSentByMe && (
-              <span className="ml-2">
-                {message.status === "sent" && "✓"}
-                {message.status === "delivered" && "✓✓"}
-                {message.status === "read" && (
-                  <span className="text-blue-300">✓✓</span>
-                )}
-              </span>
-            )}
+            <h1 className="text-3xl font-bold text-gray-800 mb-2">
+              Welcome Back
+            </h1>
+            <p className="text-gray-600">Sign in to continue chatting</p>
           </div>
-        </div>
-      </div>
-    );
-  };
 
-  // ============================================
-  // TYPING BUBBLE (Messenger-like)
-  // ============================================
-
-  const TypingBubble = () => (
-    <div className="flex mb-4 justify-start">
-      <div className="max-w-[60%] px-4 py-2 bg-white text-gray-900 border border-gray-200 rounded-2xl rounded-bl-sm shadow">
-        <div className="flex items-center gap-1">
-          <span
-            className="w-2 h-2 bg-gray-400 rounded-full animate-bounce"
-            style={{ animationDelay: "0ms" }}
-          />
-          <span
-            className="w-2 h-2 bg-gray-400 rounded-full animate-bounce"
-            style={{ animationDelay: "100ms" }}
-          />
-          <span
-            className="w-2 h-2 bg-gray-400 rounded-full animate-bounce"
-            style={{ animationDelay: "200ms" }}
-          />
-        </div>
-      </div>
-    </div>
-  );
-
-  // ============================================
-  // RENDER LOGIN
-  // ============================================
-
-  if (!isLoggedIn) {
-    return (
-      <div className="min-h-screen flex items-center justify-center bg-gray-100">
-        <div className="bg-white p-8 rounded-lg shadow-lg w-96">
-          <h1 className="text-2xl font-bold mb-6 text-center">Chat Login</h1>
-          <form onSubmit={handleLogin} className="space-y-4">
+          <div className="space-y-4">
             <div>
-              <label className="block text-sm font-medium mb-1">Email</label>
+              <label className="block text-sm font-medium text-gray-700 mb-1">
+                Email
+              </label>
               <input
                 type="email"
-                value={loginEmail}
-                onChange={(e) => setLoginEmail(e.target.value)}
-                className="w-full px-3 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-green-500"
-                placeholder="your@email.com"
-                required
+                placeholder="Enter your email"
+                value={emailInput}
+                onChange={(e) => setEmailInput(e.target.value)}
+                disabled={isLoading}
+                className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none disabled:opacity-50"
               />
             </div>
+
             <div>
-              <label className="block text-sm font-medium mb-1">Password</label>
+              <label className="block text-sm font-medium text-gray-700 mb-1">
+                Password
+              </label>
               <input
                 type="password"
-                value={loginPassword}
-                onChange={(e) => setLoginPassword(e.target.value)}
-                className="w-full px-3 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-green-500"
-                placeholder="••••••••"
-                required
+                placeholder="Enter your password"
+                value={passwordInput}
+                onChange={(e) => setPasswordInput(e.target.value)}
+                onKeyPress={(e) =>
+                  e.key === "Enter" && !isLoading && handleLogin()
+                }
+                disabled={isLoading}
+                className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none disabled:opacity-50"
               />
             </div>
+
             <button
-              type="submit"
-              className="w-full bg-green-500 text-white py-2 rounded-lg hover:bg-green-600 transition"
+              onClick={handleLogin}
+              disabled={isLoading}
+              className="w-full bg-gradient-to-r from-blue-500 to-indigo-600 text-white py-3 rounded-lg font-semibold hover:from-blue-600 hover:to-indigo-700 transition-all disabled:opacity-50 disabled:cursor-not-allowed"
             >
-              Login
+              {isLoading ? "Signing in..." : "Sign In"}
             </button>
-          </form>
+          </div>
         </div>
       </div>
     );
   }
 
-  // ============================================
-  // RENDER CHAT
-  // ============================================
-
+  // ===== CHAT SCREEN =====
   return (
-    <div className="flex h-screen bg-gray-100">
-      {/* Sidebar - User List */}
-      <div className="w-80 bg-white border-r border-gray-200 flex flex-col">
+    <div className="h-screen flex bg-gray-100">
+      {/* Sidebar */}
+      <div className="w-96 bg-white border-r border-gray-200 flex flex-col">
         {/* Header */}
-        <div className="p-4 border-b border-gray-200 bg-green-600 text-white flex items-center justify-between">
-          <div>
-            <h2 className="text-lg font-semibold">💬 Chats</h2>
-            <p className="text-sm opacity-90">{currentUserName}</p>
+        <div className="p-4 border-b border-gray-200 bg-gradient-to-r from-blue-500 to-indigo-600">
+          <div className="flex items-center justify-between mb-3">
+            <div>
+              <h1 className="text-xl font-bold text-white">Messages</h1>
+              <p className="text-xs text-white/80">{userName}</p>
+            </div>
+            <div className="text-xs text-white/80">
+              {socket?.connected ? "🟢 Connected" : "⚫ Disconnected"}
+            </div>
           </div>
-          <span
-            className={`text-xs px-2 py-1 rounded ${
-              socketConnected ? "bg-green-800" : "bg-gray-500"
-            }`}
-          >
-            {socketConnected ? "Connected" : "Offline"}
-          </span>
+          <input
+            type="text"
+            placeholder="Search conversations..."
+            value={searchQuery}
+            onChange={(e) => setSearchQuery(e.target.value)}
+            className="w-full px-4 py-2 rounded-lg bg-white/90 focus:bg-white outline-none text-sm"
+          />
         </div>
 
-        {/* Users List */}
+        {/* Conversations List */}
         <div className="flex-1 overflow-y-auto">
-          {users.map((user) => (
-            <div
-              key={user._id}
-              onClick={() => handleSelectUser(user)}
-              className={`p-4 border-b border-gray-100 cursor-pointer hover:bg-gray-50 transition ${
-                selectedUser?._id === user._id ? "bg-green-50" : ""
-              }`}
-            >
-              <div className="flex items-center gap-3">
-                <div className="w-12 h-12 rounded-full bg-green-500 flex items-center justify-center text-white font-semibold">
-                  {(user.name || user.fullName || user.email)
-                    ?.charAt(0)
-                    .toUpperCase()}
-                </div>
-                <div className="flex-1">
-                  <h3 className="font-semibold">
-                    {user.name || user.fullName || "Unknown"}
-                  </h3>
-                  <p className="text-sm text-gray-500">{user.email}</p>
-                  {typingByUser[user._id] && (
-                    <p className="text-xs text-green-600 animate-pulse">
-                      typing...
-                    </p>
-                  )}
-                </div>
-              </div>
+          {filteredConversations.length === 0 ? (
+            <div className="p-8 text-center text-gray-500">
+              <p className="text-sm">No conversations yet</p>
             </div>
-          ))}
+          ) : (
+            filteredConversations.map((conv) => {
+              const isOnline = onlineUsers.has(conv.otherUser?.id);
+              const isSelected = selectedConversation?.id === conv.id;
+
+              return (
+                <div
+                  key={conv.id}
+                  onClick={() => handleSelectConversation(conv)}
+                  className={`p-4 border-b border-gray-100 cursor-pointer hover:bg-gray-50 transition-colors ${
+                    isSelected ? "bg-blue-50" : ""
+                  }`}
+                >
+                  <div className="flex items-center space-x-3">
+                    <div className="relative flex-shrink-0">
+                      <div className="w-12 h-12 rounded-full bg-gradient-to-br from-blue-400 to-indigo-500 flex items-center justify-center text-white font-semibold text-lg">
+                        {conv.otherUser?.name?.[0]?.toUpperCase() || "?"}
+                      </div>
+                      {isOnline && (
+                        <div className="absolute bottom-0 right-0 w-3 h-3 bg-green-500 rounded-full border-2 border-white"></div>
+                      )}
+                    </div>
+                    <div className="flex-1 min-w-0">
+                      <div className="flex justify-between items-baseline mb-1">
+                        <h3 className="font-semibold text-gray-900 truncate">
+                          {conv.otherUser?.name || "Unknown"}
+                        </h3>
+                        <span className="text-xs text-gray-500 ml-2">
+                          {formatTime(conv.lastMessageAt || "")}
+                        </span>
+                      </div>
+                      <p className="text-sm text-gray-600 truncate">
+                        {conv.lastMessage || "No messages yet"}
+                      </p>
+                    </div>
+                  </div>
+                </div>
+              );
+            })
+          )}
         </div>
       </div>
 
-      {/* Main Chat Area */}
+      {/* Chat Area */}
       <div className="flex-1 flex flex-col">
-        {selectedUser ? (
+        {selectedConversation ? (
           <>
             {/* Chat Header */}
-            <div className="p-4 bg-white border-b border-gray-200 flex items-center justify-between">
-              <div className="flex items-center gap-3">
-                <div className="w-10 h-10 rounded-full bg-green-500 flex items-center justify-center text-white font-semibold">
-                  {(
-                    selectedUser.name ||
-                    selectedUser.fullName ||
-                    selectedUser.email
-                  )
-                    ?.charAt(0)
-                    .toUpperCase()}
+            <div className="p-4 bg-white border-b border-gray-200">
+              <div className="flex items-center space-x-3">
+                <div className="w-10 h-10 rounded-full bg-gradient-to-br from-blue-400 to-indigo-500 flex items-center justify-center text-white font-semibold">
+                  {selectedConversation.otherUser?.name?.[0]?.toUpperCase() ||
+                    "?"}
                 </div>
                 <div>
-                  <h3 className="font-semibold">
-                    {selectedUser.name || selectedUser.fullName || "Unknown"}
-                  </h3>
-                  {isTyping && (
-                    <p className="text-sm text-green-600 animate-pulse">
-                      typing...
-                    </p>
-                  )}
+                  <h2 className="font-semibold text-gray-900">
+                    {selectedConversation.otherUser?.name || "Unknown"}
+                  </h2>
+                  <p className="text-sm text-gray-500">
+                    {onlineUsers.has(selectedConversation.otherUser?.id)
+                      ? "🟢 Online"
+                      : "⚫ Offline"}
+                  </p>
                 </div>
               </div>
-              <button
-                onClick={() => {
-                  setIsLoggedIn(false);
-                  localStorage.clear();
-                  disconnectSocket();
-                }}
-                className="px-4 py-2 text-sm bg-red-500 text-white rounded-lg hover:bg-red-600"
-              >
-                Logout
-              </button>
             </div>
 
-            {/* Messages Area */}
-            <div className="flex-1 overflow-y-auto p-4 bg-gray-50">
-              {isLoading ? (
-                <div className="flex items-center justify-center h-full">
-                  <div className="text-gray-500">Loading messages...</div>
+            {/* Messages */}
+            <div className="flex-1 overflow-y-auto p-4 space-y-4 bg-gray-50">
+              {messages.length === 0 ? (
+                <div className="h-full flex items-center justify-center text-gray-500">
+                  <p>No messages yet. Start the conversation!</p>
                 </div>
               ) : (
-                <>
-                  {messages.map(renderMessage)}
-                  {/* Messenger-like typing bubble under the last message */}
-                  {isTyping && selectedUser && <TypingBubble />}
-                  <div ref={messagesEndRef} />
-                </>
+                messages.map((msg) => {
+                  const isSent = msg.senderId === userId;
+
+                  // Ensure content is always a string
+                  const messageContent =
+                    typeof msg.content === "string"
+                      ? msg.content
+                      : JSON.stringify(msg.content);
+
+                  return (
+                    <div
+                      key={msg.id}
+                      className={`flex ${
+                        isSent ? "justify-end" : "justify-start"
+                      }`}
+                    >
+                      <div className="max-w-md">
+                        <div
+                          className={`rounded-2xl px-4 py-2 ${
+                            isSent
+                              ? "bg-gradient-to-r from-blue-500 to-indigo-600 text-white"
+                              : "bg-white text-gray-900 border border-gray-200"
+                          }`}
+                        >
+                          {/* IMAGE */}
+                          {msg.messageType === "IMAGE" && msg.fileUrl && (
+                            <img
+                              src={msg.fileUrl}
+                              alt="Shared image"
+                              className="rounded-lg mb-2 max-w-full cursor-pointer hover:opacity-90"
+                              onClick={() => window.open(msg.fileUrl, "_blank")}
+                            />
+                          )}
+
+                          {/* PDF */}
+                          {msg.messageType === "PDF" && msg.fileUrl && (
+                            <a
+                              href={msg.fileUrl}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className={`flex items-center space-x-2 mb-2 p-2 rounded transition-colors ${
+                                isSent
+                                  ? "bg-white/20 hover:bg-white/30"
+                                  : "bg-gray-100 hover:bg-gray-200"
+                              }`}
+                            >
+                              <FileText size={20} />
+                              <span className="text-sm font-medium truncate">
+                                {msg.fileName || "Document.pdf"}
+                              </span>
+                            </a>
+                          )}
+
+                          {/* TEXT CONTENT - MUST BE STRING */}
+                          <p className="break-words whitespace-pre-wrap">
+                            {messageContent}
+                          </p>
+                        </div>
+
+                        {/* Timestamp & Read Receipt */}
+                        <div
+                          className={`flex items-center space-x-1 mt-1 text-xs text-gray-500 ${
+                            isSent ? "justify-end" : "justify-start"
+                          }`}
+                        >
+                          <span>{formatTime(msg.createdAt)}</span>
+                          {isSent && (
+                            <span className="text-blue-500">
+                              {msg.isRead ? (
+                                <CheckCheck size={14} />
+                              ) : (
+                                <Check size={14} />
+                              )}
+                            </span>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })
               )}
+              <div ref={messagesEndRef} />
             </div>
 
             {/* Input Area */}
             <div className="p-4 bg-white border-t border-gray-200">
-              {/* File Preview */}
-              {selectedFile && (
-                <div className="mb-3 p-3 bg-gray-100 rounded-lg flex items-center justify-between">
-                  <span className="text-sm">{selectedFile.name}</span>
-                  <button
-                    onClick={() => setSelectedFile(null)}
-                    className="text-red-500 hover:text-red-700"
-                  >
-                    ✕
-                  </button>
-                </div>
-              )}
-
-              {/* Input Form */}
-              <form onSubmit={handleSendMessage} className="flex gap-2">
-                {/* File Upload Button */}
+              <div className="flex items-center space-x-2">
                 <button
-                  type="button"
                   onClick={() => fileInputRef.current?.click()}
-                  className="px-4 py-2 bg-gray-200 rounded-lg hover:bg-gray-300 transition"
+                  disabled={isUploading}
+                  className="p-2 hover:bg-gray-100 rounded-full disabled:opacity-50 transition-colors"
+                  title="Upload file"
                 >
-                  📎
+                  <Paperclip size={20} className="text-gray-600" />
                 </button>
                 <input
                   ref={fileInputRef}
                   type="file"
+                  onChange={handleFileUpload}
                   accept="image/*,.pdf"
-                  onChange={handleFileSelect}
                   className="hidden"
                 />
-
-                {/* Text Input */}
                 <input
                   type="text"
-                  value={messageText}
-                  onChange={(e) => {
-                    setMessageText(e.target.value);
-                    if (selectedUser && socket) {
-                      handleTyping();
-                    }
-                  }}
-                  disabled={!isLoggedIn || !selectedUser || !socket}
-                  title={
-                    !isLoggedIn
-                      ? "Please log in to chat"
-                      : !selectedUser
-                      ? "Select a user to start chatting"
-                      : !socket
-                      ? "Connecting to chat..."
-                      : ""
+                  value={messageInput}
+                  onChange={(e) => setMessageInput(e.target.value)}
+                  onKeyPress={(e) =>
+                    e.key === "Enter" &&
+                    !e.shiftKey &&
+                    !isUploading &&
+                    sendMessage()
                   }
-                  onBlur={() => {
-                    if (socket && selectedUser) {
-                      socket.emit("typing_stop", {
-                        userId: currentUserId,
-                        toUserId: selectedUser._id,
-                      });
-                    }
-                  }}
-                  placeholder={
-                    selectedFile
-                      ? "Add caption (optional)"
-                      : "Type a message..."
-                  }
-                  className="flex-1 px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-green-500"
+                  placeholder="Type a message..."
+                  disabled={isUploading}
+                  className="flex-1 px-4 py-2 border border-gray-300 rounded-full focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none disabled:opacity-50"
                 />
-
-                {/* Send Button */}
                 <button
-                  type="submit"
-                  disabled={
-                    (!messageText.trim() && !selectedFile) || isUploading
-                  }
-                  className="px-6 py-2 bg-green-500 text-white rounded-lg hover:bg-green-600 transition disabled:bg-gray-300 disabled:cursor-not-allowed"
+                  onClick={sendMessage}
+                  disabled={!messageInput.trim() || isUploading}
+                  className="p-3 bg-gradient-to-r from-blue-500 to-indigo-600 text-white rounded-full hover:from-blue-600 hover:to-indigo-700 disabled:opacity-50 disabled:cursor-not-allowed transition-all"
+                  title="Send message"
                 >
-                  {isUploading ? "⏳" : "Send"}
+                  <Send size={20} />
                 </button>
-              </form>
+              </div>
+              {isUploading && (
+                <div className="mt-2 text-sm text-gray-500 text-center animate-pulse">
+                  Uploading file...
+                </div>
+              )}
             </div>
           </>
         ) : (
           <div className="flex-1 flex items-center justify-center bg-gray-50">
-            <div className="text-center text-gray-500">
-              <h3 className="text-xl font-semibold mb-2">
-                Select a user to start chatting
-              </h3>
-              <p>Choose from the list on the left</p>
+            <div className="text-center">
+              <div className="w-24 h-24 bg-gradient-to-br from-blue-100 to-indigo-100 rounded-full mx-auto mb-4 flex items-center justify-center">
+                <Send className="text-blue-500" size={40} />
+              </div>
+              <h2 className="text-2xl font-bold text-gray-800 mb-2">
+                Select a conversation
+              </h2>
+              <p className="text-gray-600">
+                Choose a conversation from the sidebar to start chatting
+              </p>
             </div>
           </div>
         )}
       </div>
     </div>
   );
-}
+};
+
+export default DaymoonChat;
