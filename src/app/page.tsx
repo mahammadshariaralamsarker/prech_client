@@ -1,7 +1,10 @@
 "use client";
 import AlvaaroTiktokLogin from "@/components/AlvaaroTiktok";
 import DaymoonChat from "@/components/daymoonChat";
+import ChatComponent from "@/components/daymoonV2";
+import DaymoonChatv2 from "@/components/daymoonV2";
 import FacebookButton from "@/components/FacebookButton";
+import OutmanziziV2 from "@/components/outmanV2";
 import Outmanzizi from "@/components/outmanzizi";
 import PaymentStripePage from "@/components/PaymentStripe";
 import TikTokLogin from "@/components/TiktokLogin";
@@ -22,7 +25,9 @@ const Page = () => {
       {/* <ChatPage /> */}
       {/* <ChatPage2 /> */}
       {/* <Outmanzizi /> */}
-      <DaymoonChat />
+      {/* <DaymoonChat /> */}
+      {/* <OutmanziziV2 /> */}
+      <ChatComponent />
     </div>
   );
 };
